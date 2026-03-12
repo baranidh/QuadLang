@@ -31,19 +31,32 @@ export const useTranslation = (inputText) => {
     setLoading(true);
     setError(null);
 
-    const targets = ['ta', 'en', 'zh', 'hi'];
+    const run = async () => {
+      // Step 1: Get English text (pivot language for best accuracy).
+      // If source is already English, use input directly.
+      const englishText = sourceLang === 'en'
+        ? inputText
+        : await fetchTranslation(inputText, sourceLang, 'en');
 
-    Promise.all(
-      targets.map(async (target) => {
-        const text = await fetchTranslation(inputText, sourceLang, target);
-        return [target, text];
-      })
-    )
+      // Step 2: Translate from English to remaining languages in parallel.
+      // English→X pairs have the highest quality in MyMemory.
+      const otherTargets = ['ta', 'zh', 'hi'];
+      const otherResults = await Promise.all(
+        otherTargets.map(async (target) => {
+          const text = await fetchTranslation(englishText, 'en', target);
+          return [target, text];
+        })
+      );
+
+      return Object.fromEntries([['en', englishText], ...otherResults]);
+    };
+
+    run()
       .then((results) => {
-        setTranslations(Object.fromEntries(results));
+        setTranslations(results);
         setLoading(false);
       })
-      .catch((err) => {
+      .catch(() => {
         setError('Translation service unavailable. Please try again.');
         setLoading(false);
       });
