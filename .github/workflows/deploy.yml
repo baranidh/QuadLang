@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - claude/multilingual-learning-app-OmIX5
   workflow_dispatch:
 
 permissions:
