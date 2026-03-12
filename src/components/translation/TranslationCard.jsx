@@ -25,7 +25,7 @@ const TranslationCard = ({ language, translatedText, isLoading }) => {
           <AudioButton
             text={translatedText}
             langCode={langCode}
-            color="white"
+            color={color}
             size="sm"
           />
         )}
