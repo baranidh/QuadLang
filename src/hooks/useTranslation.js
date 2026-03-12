@@ -1,17 +1,48 @@
 import { useState, useEffect } from 'react';
 import { detectLanguage } from '../utils/detectLanguage';
 
-const MYMEMORY_URL = 'https://api.mymemory.translated.net/get';
+// ── API 1: Google Translate (unofficial, best quality) ──────────────────────
+const googleTranslate = async (text, targetCode) => {
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetCode}&dt=t&q=${encodeURIComponent(text)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Google HTTP ${res.status}`);
+  const data = await res.json();
+  const result = data[0].map(chunk => chunk[0]).join('').trim();
+  if (!result) throw new Error('Empty response');
+  return result;
+};
 
-const fetchTranslation = async (text, fromCode, toCode) => {
-  if (fromCode === toCode) return text;
-  const url = `${MYMEMORY_URL}?q=${encodeURIComponent(text)}&langpair=${fromCode}|${toCode}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const data = await response.json();
-  if (data.responseStatus !== 200) throw new Error(data.responseDetails || 'Translation failed');
+// ── API 2: MyMemory (fallback, pivot via English) ───────────────────────────
+const myMemoryTranslate = async (text, sourceLang, targetCode) => {
+  // Pivot: non-English → English → target (better quality than direct pairs)
+  const pivot = sourceLang === 'en' ? text
+    : await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sourceLang}|en`)
+        .then(r => r.json()).then(d => d.responseData.translatedText);
+
+  if (targetCode === 'en') return pivot;
+
+  const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(pivot)}&langpair=en|${targetCode}`);
+  const data = await res.json();
   return data.responseData.translatedText;
 };
+
+// ── Per-language translation with fallback ─────────────────────────────────
+const translateOne = async (text, sourceLang, googleCode, myMemoryCode) => {
+  try {
+    return await googleTranslate(text, googleCode);
+  } catch {
+    // Fallback to MyMemory
+    return await myMemoryTranslate(text, sourceLang, myMemoryCode);
+  }
+};
+
+// Google code → MyMemory code map
+const TARGETS = [
+  { key: 'ta', googleCode: 'ta',    myMemoryCode: 'ta' },
+  { key: 'en', googleCode: 'en',    myMemoryCode: 'en' },
+  { key: 'zh', googleCode: 'zh-CN', myMemoryCode: 'zh' },
+  { key: 'hi', googleCode: 'hi',    myMemoryCode: 'hi' },
+];
 
 export const useTranslation = (inputText) => {
   const [translations, setTranslations] = useState({ ta: '', en: '', zh: '', hi: '' });
@@ -31,35 +62,27 @@ export const useTranslation = (inputText) => {
     setLoading(true);
     setError(null);
 
-    const run = async () => {
-      // Step 1: Get English text (pivot language for best accuracy).
-      // If source is already English, use input directly.
-      const englishText = sourceLang === 'en'
-        ? inputText
-        : await fetchTranslation(inputText, sourceLang, 'en');
-
-      // Step 2: Translate from English to remaining languages in parallel.
-      // English→X pairs have the highest quality in MyMemory.
-      const otherTargets = ['ta', 'zh', 'hi'];
-      const otherResults = await Promise.all(
-        otherTargets.map(async (target) => {
-          const text = await fetchTranslation(englishText, 'en', target);
-          return [target, text];
-        })
-      );
-
-      return Object.fromEntries([['en', englishText], ...otherResults]);
-    };
-
-    run()
-      .then((results) => {
-        setTranslations(results);
-        setLoading(false);
+    // Translate all 4 languages in parallel; each has its own Google→MyMemory fallback.
+    Promise.allSettled(
+      TARGETS.map(async ({ key, googleCode, myMemoryCode }) => {
+        const text = await translateOne(inputText, sourceLang, googleCode, myMemoryCode);
+        return [key, text];
       })
-      .catch(() => {
-        setError('Translation service unavailable. Please try again.');
-        setLoading(false);
+    ).then((results) => {
+      const translations = {};
+      let anyFailed = false;
+      results.forEach((result) => {
+        if (result.status === 'fulfilled') {
+          const [key, text] = result.value;
+          translations[key] = text;
+        } else {
+          anyFailed = true;
+        }
       });
+      setTranslations(prev => ({ ...prev, ...translations }));
+      setError(anyFailed ? 'Some translations failed. Please check your connection.' : null);
+      setLoading(false);
+    });
   }, [inputText]);
 
   return { translations, loading, error, detectedLang };
