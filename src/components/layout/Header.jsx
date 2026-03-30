@@ -40,7 +40,7 @@ const Header = ({ activeTab, onTabChange }) => {
           </div>
 
           {/* Nav tabs */}
-          <nav className="flex gap-2">
+          <nav className="flex gap-2 flex-wrap justify-center">
             <button
               onClick={() => onTabChange('translate')}
               className={`
@@ -64,6 +64,18 @@ const Header = ({ activeTab, onTabChange }) => {
               `}
             >
               🃏 Flashcards
+            </button>
+            <button
+              onClick={() => onTabChange('assessment')}
+              className={`
+                px-5 py-2 rounded-full font-bold text-sm transition-all duration-200
+                ${activeTab === 'assessment'
+                  ? 'bg-amber-500 text-white shadow-md scale-105'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }
+              `}
+            >
+              🎓 Assessment
             </button>
           </nav>
         </div>
