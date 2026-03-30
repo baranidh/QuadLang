@@ -4,10 +4,10 @@ import { ALL_TAMIL_LETTERS, assessPronunciation, shuffleArray } from '../../cons
 // ─── Constants ────────────────────────────────────────────────────────────────
 const MAX_RECORD_MS = 6000;
 const LETTER_SETS = [
-  { id: 'all',       label: 'All 246 letters',        filter: () => true },
-  { id: 'vowels',    label: 'Vowels only (12)',        filter: l => l.group === 'vowel' },
-  { id: 'consonants',label: 'Consonants only (18)',    filter: l => l.group === 'consonant' },
-  { id: 'combined',  label: 'Combinations only (216)', filter: l => l.group === 'combined' },
+  { id: 'all',        en: 'All letters',    ta: 'அனைத்தும்',  count: 246, filter: () => true },
+  { id: 'vowels',     en: 'Vowels',         ta: 'உயிர்',       count: 12,  filter: l => l.group === 'vowel' },
+  { id: 'consonants', en: 'Consonants',     ta: 'மெய்',        count: 18,  filter: l => l.group === 'consonant' },
+  { id: 'combined',   en: 'Combinations',   ta: 'உயிர்மெய்',  count: 216, filter: l => l.group === 'combined' },
 ];
 
 // ─── Tiny sub-components ─────────────────────────────────────────────────────
@@ -77,12 +77,16 @@ function SetupView({ onStart }) {
               <button
                 key={s.id}
                 onClick={() => setSetId(s.id)}
-                className={`px-4 py-2 rounded-xl border-2 text-sm font-semibold transition-all
+                className={`px-4 py-2.5 rounded-xl border-2 transition-all text-left
                   ${setId === s.id
                     ? 'border-orange-500 bg-orange-50 text-orange-700'
                     : 'border-gray-200 text-gray-600 hover:border-orange-300'}`}
               >
-                {s.label}
+                <div className="font-bold text-sm leading-tight">{s.en}</div>
+                <div className="font-semibold text-xs opacity-75"
+                     style={{ fontFamily: 'Noto Sans Tamil, serif' }}>
+                  {s.ta} ({s.count})
+                </div>
               </button>
             ))}
           </div>
