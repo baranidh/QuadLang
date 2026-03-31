@@ -128,7 +128,25 @@ export function generateTamilLetters() {
   return letters;
 }
 
-// ─── Assess a transcription against a letter ─────────────────────────────────
+// ─── Levenshtein distance (edit distance) ────────────────────────────────────
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = i;
+    for (let j = 1; j <= b.length; j++) {
+      const val = a[i - 1] === b[j - 1] ? row[j - 1] : 1 + Math.min(row[j - 1], row[j], prev);
+      row[j - 1] = prev;
+      prev = val;
+    }
+    row[b.length] = prev;
+  }
+  return row[b.length];
+}
+
+// ─── Assess a transcription against a letter (fuzzy / Levenshtein) ───────────
 export function assessPronunciation(rawTranscript, letter) {
   if (!rawTranscript) return false;
   const t = rawTranscript.toLowerCase().trim();
@@ -137,14 +155,12 @@ export function assessPronunciation(rawTranscript, letter) {
   // Direct Tamil character match (ta-IN STT returns Tamil text)
   if (rawTranscript.includes(letter.char)) return true;
 
-  // Romanized match
-  const roman = letter.romanized.toLowerCase();
-  if (t === roman || t.startsWith(roman) || roman.startsWith(t)) return true;
-
-  // Accepted variants
-  return letter.acceptedSpeech.some(v => {
-    const vl = v.toLowerCase();
-    return t === vl || t.startsWith(vl) || vl.startsWith(t);
+  // Accepted variants — checked with Levenshtein edit-distance tolerance
+  return letter.acceptedSpeech.some(variant => {
+    const v = variant.toLowerCase();
+    if (!v) return false;
+    const maxDist = v.length <= 2 ? 0 : v.length <= 4 ? 1 : 2;
+    return levenshtein(t, v) <= maxDist;
   });
 }
 

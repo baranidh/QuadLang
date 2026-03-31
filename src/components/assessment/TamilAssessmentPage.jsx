@@ -2,6 +2,37 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { ALL_TAMIL_LETTERS, assessPronunciation, shuffleArray } from '../../constants/tamilLetters';
 
 const MAX_RECORD_MS = 6000;
+const LS_API_KEY = 'quadlang-api-key';
+
+// ── Claude API assessment ─────────────────────────────────────────────────────
+async function assessWithClaude(apiKey, transcript, letter) {
+  const prompt =
+    `You are assessing a student's Tamil pronunciation. The student was asked to say the Tamil letter "${letter.char}" (romanized: "${letter.romanized}", group: ${letter.group}).\n` +
+    `The speech-to-text system heard: "${transcript || '(nothing)'}"\n\n` +
+    `Decide if the student pronounced it correctly. Consider direct Tamil character matches, romanized variants (${letter.acceptedSpeech.slice(0, 8).join(', ')}…), and phonetic similarity.\n` +
+    `Reply with ONLY valid JSON: {"correct": true or false, "reason": "one short sentence"}`;
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      max_tokens: 120,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if (!resp.ok) throw new Error(`API error ${resp.status}`);
+  const data = await resp.json();
+  const text = data.content?.[0]?.text ?? '';
+  const m = text.match(/\{[\s\S]*?\}/);
+  if (!m) throw new Error('No JSON in response');
+  return JSON.parse(m[0]); // { correct, reason }
+}
 const LETTER_SETS = [
   { id: 'all',        en: 'All letters',    ta: 'அனைத்தும்', count: 246, filter: () => true },
   { id: 'vowels',     en: 'Vowels',         ta: 'உயிர்',      count: 12,  filter: l => l.group === 'vowel' },
@@ -41,10 +72,11 @@ function AutoToggle({ value, onChange }) {
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
-function SetupView({ onStart }) {
+function SetupView({ onStart, apiKey, setApiKey }) {
   const [name, setName]           = useState('');
   const [setId, setSetId]         = useState('all');
   const [autoAssess, setAuto]     = useState(true);
+  const [showKey, setShowKey]     = useState(false);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-amber-50 flex items-center justify-center p-4">
@@ -63,7 +95,7 @@ function SetupView({ onStart }) {
             type="text" value={name} onChange={e => setName(e.target.value)}
             placeholder="Enter student name…"
             className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-lg focus:outline-none focus:border-orange-400 transition"
-            onKeyDown={e => e.key === 'Enter' && name.trim() && onStart(name.trim(), setId, autoAssess)}
+            onKeyDown={e => e.key === 'Enter' && name.trim() && onStart(name.trim(), setId, autoAssess, apiKey)}
           />
         </label>
 
@@ -82,6 +114,40 @@ function SetupView({ onStart }) {
                 </div>
               </button>
             ))}
+          </div>
+        </div>
+
+        {/* API key (optional) */}
+        <div className="mb-5 rounded-2xl border-2 border-gray-100 p-4">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-sm font-bold text-gray-700">
+              {apiKey ? '🤖 Claude AI assessment' : '📐 Fuzzy match assessment'}
+            </span>
+            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${apiKey ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+              {apiKey ? 'API key saved' : 'No key'}
+            </span>
+          </div>
+          <p className="text-xs text-gray-400 mb-2">
+            Optional: paste your Anthropic API key for smarter AI grading. Leave blank to use built-in fuzzy matching.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type={showKey ? 'text' : 'password'}
+              value={apiKey}
+              onChange={e => { setApiKey(e.target.value); localStorage.setItem(LS_API_KEY, e.target.value); }}
+              placeholder="sk-ant-…  (optional)"
+              className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-orange-400 transition font-mono"
+            />
+            <button type="button" onClick={() => setShowKey(v => !v)}
+              className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-600 text-sm font-bold transition-all">
+              {showKey ? '🙈' : '👁'}
+            </button>
+            {apiKey && (
+              <button type="button" onClick={() => { setApiKey(''); localStorage.removeItem(LS_API_KEY); }}
+                className="px-3 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 text-sm font-bold transition-all">
+                ✕
+              </button>
+            )}
           </div>
         </div>
 
@@ -110,7 +176,7 @@ function SetupView({ onStart }) {
 
         <button
           disabled={!name.trim()}
-          onClick={() => onStart(name.trim(), setId, autoAssess)}
+          onClick={() => onStart(name.trim(), setId, autoAssess, apiKey)}
           className="w-full py-4 rounded-2xl text-lg font-black text-white bg-orange-500
                      hover:bg-orange-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-lg active:scale-95"
         >
@@ -146,8 +212,8 @@ function FlashCard({ letter, flipping }) {
 }
 
 // ── Record Panel ──────────────────────────────────────────────────────────────
-function RecordPanel({ recState, transcript, result, autoAssess, onStart, onStop, supported }) {
-  const label = { idle: '🎤 Ready to record', recording: '🔴 Listening…', processing: '⏳ Processing…', done: '✔ Done' }[recState];
+function RecordPanel({ recState, transcript, result, method, reason, autoAssess, onStart, onStop, supported }) {
+  const label = { idle: '🎤 Ready to record', recording: '🔴 Listening…', processing: '⏳ Processing…', assessing: '🤖 Asking Claude…', done: '✔ Done' }[recState];
 
   if (!supported)
     return (
@@ -164,7 +230,7 @@ function RecordPanel({ recState, transcript, result, autoAssess, onStart, onStop
           <PulsingDot active={recState === 'recording'} />
           {label}
         </div>
-        {(recState === 'idle' || recState === 'done') && (
+        {(recState === 'idle' || recState === 'done') && recState !== 'assessing' && (
           <button onClick={onStart}
             className="px-4 py-1.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-bold transition-all active:scale-95 shadow">
             🎤 Record
@@ -187,10 +253,17 @@ function RecordPanel({ recState, transcript, result, autoAssess, onStart, onStop
 
       {recState === 'done' && (
         <div className="flex flex-col items-center gap-1">
-          {autoAssess && result !== null
-            ? <div className="flex items-center gap-2"><Badge correct={result} /><span className="text-xs text-gray-400">auto-assessed · teacher can override</span></div>
-            : <p className="text-sm font-semibold text-amber-600 bg-amber-50 rounded-xl py-2 px-4 text-center">👆 Mark correct or wrong below</p>
-          }
+          {autoAssess && result !== null ? (
+            <div className="flex flex-col items-center gap-1 w-full">
+              <div className="flex items-center gap-2">
+                <Badge correct={result} />
+                <span className="text-xs text-gray-400">{method === 'claude' ? '🤖 Claude AI' : '📐 Fuzzy match'} · teacher can override</span>
+              </div>
+              {reason && <p className="text-xs text-gray-500 italic text-center px-2">{reason}</p>}
+            </div>
+          ) : (
+            <p className="text-sm font-semibold text-amber-600 bg-amber-50 rounded-xl py-2 px-4 text-center">👆 Mark correct or wrong below</p>
+          )}
         </div>
       )}
     </div>
@@ -249,10 +322,12 @@ function TeacherPanel({ recState, result, autoAssess, currentIdx, totalLetters, 
 }
 
 // ── Testing View ──────────────────────────────────────────────────────────────
-function TestingView({ studentName, letterQueue, currentIdx, results, autoAssess: initAutoAssess, onRetake, onNext, onEnd, onSaveResult, onOverride }) {
+function TestingView({ studentName, letterQueue, currentIdx, results, autoAssess: initAutoAssess, apiKey: initApiKey, onRetake, onNext, onEnd, onSaveResult, onOverride }) {
   const [recState, setRecState]       = useState('idle');
   const [transcript, setTranscript]   = useState('');
   const [currentResult, setResult]    = useState(null);
+  const [method, setMethod]           = useState(null);   // 'claude' | 'fuzzy' | null
+  const [reason, setReason]           = useState('');
   const [flipping, setFlipping]       = useState(false);
   const [sttOk, setSttOk]             = useState(true);
   const [autoAssess, setAutoAssess]   = useState(initAutoAssess);
@@ -264,15 +339,19 @@ function TestingView({ studentName, letterQueue, currentIdx, results, autoAssess
   const txRef           = useRef('');
   const idxRef          = useRef(currentIdx);
   const autoRef         = useRef(initAutoAssess);
+  const apiKeyRef       = useRef(initApiKey);
 
   useEffect(() => { idxRef.current = currentIdx; }, [currentIdx]);
   useEffect(() => { autoRef.current = autoAssess; }, [autoAssess]);
+  useEffect(() => { apiKeyRef.current = initApiKey; }, [initApiKey]);
 
   // Reset on card change
   useEffect(() => {
     setRecState('idle');
     setTranscript('');
     setResult(null);
+    setMethod(null);
+    setReason('');
     txRef.current = '';
   }, [currentIdx]);
 
@@ -312,24 +391,46 @@ function TestingView({ studentName, letterQueue, currentIdx, results, autoAssess
       stream.getTracks().forEach(t => t.stop());
       recRef.current = null;
 
-      const blob    = new Blob(chunksRef.current, { type: 'audio/webm' });
-      const url     = URL.createObjectURL(blob);
-      const tx      = txRef.current;
-      const idx     = idxRef.current;
-      const ltr     = letterQueue[idx];
-      // Auto-assess only when enabled; otherwise null = pending teacher decision
-      const correct = autoRef.current ? assessPronunciation(tx, ltr) : null;
+      const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+      const url  = URL.createObjectURL(blob);
+      const tx   = txRef.current;
+      const idx  = idxRef.current;
+      const ltr  = letterQueue[idx];
 
-      setResult(correct);
-      setRecState('done');
+      const finalize = (correct, meth, rsn) => {
+        setResult(correct);
+        setMethod(meth);
+        setReason(rsn || '');
+        setRecState('done');
+        const reader = new FileReader();
+        reader.onload = ev => onSaveResult(idx, {
+          letter: ltr, transcript: tx,
+          audioUrl: url, audioDataUrl: ev.target.result,
+          correct, wasOverridden: false, method: meth, reason: rsn || '',
+        });
+        reader.readAsDataURL(blob);
+      };
 
-      const reader = new FileReader();
-      reader.onload = ev => onSaveResult(idx, {
-        letter: ltr, transcript: tx,
-        audioUrl: url, audioDataUrl: ev.target.result,
-        correct, wasOverridden: false,
-      });
-      reader.readAsDataURL(blob);
+      if (!autoRef.current) {
+        // Manual mode — teacher decides
+        finalize(null, null, '');
+        return;
+      }
+
+      const key = apiKeyRef.current;
+      if (key) {
+        // Try Claude first
+        setRecState('assessing');
+        assessWithClaude(key, tx, ltr)
+          .then(({ correct, reason: rsn }) => finalize(correct, 'claude', rsn))
+          .catch(() => {
+            // Fallback to fuzzy on API error
+            finalize(assessPronunciation(tx, ltr), 'fuzzy', '');
+          });
+      } else {
+        // No API key — use fuzzy matching
+        finalize(assessPronunciation(tx, ltr), 'fuzzy', '');
+      }
     };
 
     // Speech recognition — en-US for reliable short-syllable recognition
@@ -411,6 +512,7 @@ function TestingView({ studentName, letterQueue, currentIdx, results, autoAssess
         <FlashCard letter={letter} flipping={flipping} />
         <RecordPanel
           recState={recState} transcript={transcript} result={currentResult}
+          method={method} reason={reason}
           autoAssess={autoAssess} onStart={startRecording} onStop={stopRecording} supported={sttOk}
         />
         <TeacherPanel
@@ -435,11 +537,12 @@ function CompleteView({ studentName, letterQueue, results, onNewStudent }) {
   const gradeCl  = pct >= 70 ? 'text-green-600' : pct >= 50 ? 'text-amber-600' : 'text-red-600';
 
   const downloadReport = () => {
-    const headers = ['#', 'Tamil Letter', 'Romanized', 'Group', 'What Was Heard', 'Result', 'Overridden'];
+    const headers = ['#', 'Tamil Letter', 'Romanized', 'Group', 'What Was Heard', 'Result', 'Overridden', 'Method', 'AI Reason'];
     const rows = letterQueue.map((letter, idx) => {
       const r = results[idx];
-      if (!r) return [idx + 1, letter.char, letter.romanized, letter.group, '—', 'Not tested', '—'];
-      return [idx + 1, letter.char, letter.romanized, letter.group, r.transcript || '(none)', r.correct ? 'Correct' : 'Wrong', r.wasOverridden ? 'Yes' : 'No'];
+      if (!r) return [idx + 1, letter.char, letter.romanized, letter.group, '—', 'Not tested', '—', '—', '—'];
+      const meth = r.method === 'claude' ? 'Claude AI' : r.method === 'fuzzy' ? 'Fuzzy match' : 'Manual';
+      return [idx + 1, letter.char, letter.romanized, letter.group, r.transcript || '(none)', r.correct ? 'Correct' : 'Wrong', r.wasOverridden ? 'Yes' : 'No', meth, r.reason || '—'];
     });
     const summary = [
       ['Student', studentName], ['Date', new Date().toLocaleString()],
@@ -539,11 +642,14 @@ audio{height:36px}
   <button id="stitch-btn" onclick="dlStitched()">⬇ Download Stitched WAV</button>
 </div>
 <hr/>
-${entries.map(({letter:l, transcript:tx, audioDataUrl:src, correct:cor}) =>
+${entries.map(({letter:l, transcript:tx, audioDataUrl:src, correct:cor, method:meth, reason:rsn}) =>
   `<div class="card clip"><div class="letter">${l.char}</div><div class="info">
   <div><strong>${l.romanized}</strong> <span style="color:#6b7280;font-size:.85rem">${l.group}</span></div>
   <div class="heard">Heard: ${tx||'(none)'}</div>
-  <span class="badge ${cor?'c':'w'}">${cor?'✅ Correct':'❌ Wrong'}</span></div>
+  <span class="badge ${cor?'c':'w'}">${cor?'✅ Correct':'❌ Wrong'}</span>
+  ${meth?`<span style="font-size:.72rem;color:#9ca3af;margin-left:.4rem">${meth==='claude'?'🤖 Claude AI':'📐 Fuzzy'}</span>`:''}
+  ${rsn?`<div style="font-size:.75rem;color:#6b7280;font-style:italic;margin-top:.2rem">${rsn}</div>`:''}
+  </div>
   <audio class="clip-audio" controls src="${src}"></audio></div>`).join('\n')}
 <script>${embeddedScript}<\/script>
 </body></html>`;
@@ -621,14 +727,16 @@ const TamilAssessmentPage = () => {
   const [currentIdx, setIdx]      = useState(0);
   const [results, setResults]     = useState({});
   const [autoAssess, setAuto]     = useState(true);
+  const [apiKey, setApiKey]       = useState(() => localStorage.getItem(LS_API_KEY) || '');
 
-  const handleStart = (name, setId, auto) => {
+  const handleStart = (name, setId, auto, key) => {
     const filter = LETTER_SETS.find(s => s.id === setId)?.filter ?? (() => true);
     setName(name);
     setQueue(shuffleArray(ALL_TAMIL_LETTERS.filter(filter)));
     setIdx(0);
     setResults({});
     setAuto(auto);
+    if (key !== undefined) setApiKey(key);
     setPhase('testing');
   };
 
@@ -642,12 +750,12 @@ const TamilAssessmentPage = () => {
   const handleEnd        = () => setPhase('complete');
   const handleNewStudent = () => { setPhase('setup'); setName(''); setQueue([]); setIdx(0); setResults({}); };
 
-  if (phase === 'setup')    return <SetupView onStart={handleStart} />;
+  if (phase === 'setup')    return <SetupView onStart={handleStart} apiKey={apiKey} setApiKey={setApiKey} />;
   if (phase === 'complete') return <CompleteView studentName={studentName} letterQueue={letterQueue} results={results} onNewStudent={handleNewStudent} />;
   return (
     <TestingView
       studentName={studentName} letterQueue={letterQueue} currentIdx={currentIdx}
-      results={results} autoAssess={autoAssess}
+      results={results} autoAssess={autoAssess} apiKey={apiKey}
       onNext={handleNext} onRetake={handleRetake} onEnd={handleEnd}
       onSaveResult={handleSaveResult} onOverride={handleOverride}
     />
