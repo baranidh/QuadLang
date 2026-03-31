@@ -456,25 +456,98 @@ function CompleteView({ studentName, letterQueue, results, onNewStudent }) {
   const downloadAudios = () => {
     const entries = Object.entries(results).filter(([,r]) => r.audioDataUrl).map(([i,r]) => ({ idx:+i, ...r })).sort((a,b) => a.idx - b.idx);
     if (!entries.length) { alert('No audio recordings found.'); return; }
+
+    // Embedded JS runs inside the downloaded HTML — handles sequential playback
+    // and on-demand WAV stitching using Web Audio API (no size limit, no deps)
+    const embeddedScript = `
+function playAll(){
+  const clips=document.querySelectorAll('.clip');
+  const btn=document.getElementById('play-btn');
+  let i=0;
+  btn.disabled=true; btn.textContent='⏸ Playing…';
+  const next=()=>{
+    if(i>=clips.length){btn.disabled=false;btn.textContent='▶ Play Full Session';return;}
+    const card=clips[i]; card.scrollIntoView({behavior:'smooth',block:'nearest'});
+    card.style.outline='3px solid #ea580c';
+    const a=card.querySelector('audio'); i++;
+    a.play(); a.onended=()=>{card.style.outline='';next();};
+  };
+  next();
+}
+function encWAV(buf){
+  const sr=buf.sampleRate,len=buf.length,ab=new ArrayBuffer(44+len*2),v=new DataView(ab);
+  const ws=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+  ws(0,'RIFF');v.setUint32(4,36+len*2,true);ws(8,'WAVE');
+  ws(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);
+  ws(36,'data');v.setUint32(40,len*2,true);
+  const d=buf.getChannelData(0);let o=44;
+  for(let i=0;i<len;i++){const s=Math.max(-1,Math.min(1,d[i]));v.setInt16(o,s<0?s*0x8000:s*0x7FFF,true);o+=2;}
+  return new Blob([ab],{type:'audio/wav'});
+}
+async function dlStitched(){
+  const btn=document.getElementById('stitch-btn');
+  btn.disabled=true;btn.textContent='⏳ Processing…';
+  try{
+    const ctx=new(window.AudioContext||window.webkitAudioContext)();
+    const srcs=[...document.querySelectorAll('.clip audio')].map(a=>a.src);
+    const bufs=await Promise.all(srcs.map(async s=>{
+      const r=await fetch(s),ab=await r.arrayBuffer();
+      return ctx.decodeAudioData(ab);
+    }));
+    const rate=bufs[0].sampleRate,gap=Math.floor(rate*0.35);
+    const total=bufs.reduce((s,b)=>s+b.length+gap,0);
+    const out=ctx.createBuffer(1,total,rate);
+    const ch=out.getChannelData(0);let off=0;
+    for(const b of bufs){ch.set(b.getChannelData(0),off);off+=b.length+gap;}
+    await ctx.close();
+    const wav=encWAV(out);
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(wav);a.download='full-session-stitched.wav';a.click();
+    btn.disabled=false;btn.textContent='⬇ Download Stitched WAV';
+  }catch(e){btn.disabled=false;btn.textContent='⚠ Error: '+e.message;}
+}`;
+
     const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <title>Recordings — ${studentName}</title>
-<style>body{font-family:sans-serif;max-width:800px;margin:2rem auto;padding:1rem;background:#fffbf0}
-h1{color:#ea580c}.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:1rem;
-margin:.5rem 0;display:flex;align-items:center;gap:1rem}.letter{font-size:2.5rem;
-font-family:'Noto Sans Tamil',serif;min-width:60px;text-align:center}.info{flex:1}
+<style>
+body{font-family:sans-serif;max-width:820px;margin:2rem auto;padding:1rem;background:#fffbf0}
+h1{color:#ea580c}
+.toolbar{display:flex;gap:.75rem;flex-wrap:wrap;margin:1rem 0;padding:1rem;
+  background:#fff;border-radius:14px;border:1px solid #e5e7eb;align-items:center}
+.toolbar button{padding:.5rem 1.2rem;border-radius:999px;border:none;cursor:pointer;
+  font-weight:700;font-size:.9rem;transition:opacity .15s}
+.toolbar button:disabled{opacity:.5;cursor:not-allowed}
+#play-btn{background:#ea580c;color:#fff}
+#stitch-btn{background:#7c3aed;color:#fff}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:1rem;
+  margin:.5rem 0;display:flex;align-items:center;gap:1rem;transition:outline .1s}
+.letter{font-size:2.5rem;font-family:'Noto Sans Tamil',serif;min-width:60px;text-align:center}
+.info{flex:1}
 .badge{padding:.2rem .6rem;border-radius:999px;font-size:.75rem;font-weight:700}
 .c{background:#dcfce7;color:#15803d}.w{background:#fee2e2;color:#dc2626}
-.heard{font-size:.8rem;color:#9ca3af;margin-top:.2rem}audio{height:36px}</style></head>
-<body><h1>🎓 Tamil Assessment Recordings</h1>
+.heard{font-size:.8rem;color:#9ca3af;margin-top:.2rem}
+audio{height:36px}
+</style></head>
+<body>
+<h1>🎓 Tamil Assessment Recordings</h1>
 <p><strong>Student:</strong> ${studentName} &nbsp;<strong>Date:</strong> ${new Date().toLocaleString()}</p>
-<p><strong>Score:</strong> ${correct}/${answered} (${pct}%) — Grade: ${grade}</p><hr/>
+<p><strong>Score:</strong> ${correct}/${answered} (${pct}%) — Grade: ${grade}</p>
+<div class="toolbar">
+  <span style="font-weight:700;color:#6b7280">${entries.length} recordings</span>
+  <button id="play-btn" onclick="playAll()">▶ Play Full Session</button>
+  <button id="stitch-btn" onclick="dlStitched()">⬇ Download Stitched WAV</button>
+</div>
+<hr/>
 ${entries.map(({letter:l, transcript:tx, audioDataUrl:src, correct:cor}) =>
-  `<div class="card"><div class="letter">${l.char}</div><div class="info">
+  `<div class="card clip"><div class="letter">${l.char}</div><div class="info">
   <div><strong>${l.romanized}</strong> <span style="color:#6b7280;font-size:.85rem">${l.group}</span></div>
   <div class="heard">Heard: ${tx||'(none)'}</div>
   <span class="badge ${cor?'c':'w'}">${cor?'✅ Correct':'❌ Wrong'}</span></div>
-  <audio controls src="${src}"></audio></div>`).join('\n')}
+  <audio class="clip-audio" controls src="${src}"></audio></div>`).join('\n')}
+<script>${embeddedScript}<\/script>
 </body></html>`;
+
     const a = Object.assign(document.createElement('a'), {
       href: URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' })),
       download: `audio-recordings-${studentName}-${new Date().toISOString().slice(0,10)}.html`,
